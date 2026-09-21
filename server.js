@@ -100,6 +100,21 @@ function looksLikeRelatedHeadline(text) {
   return false;
 }
 
+function looksLikeSponichiRelated(text) {
+  const t = cleanText(text);
+  if (!t) return false;
+
+  // Sponichi related-story modules commonly include a date in brackets
+  // and/or an ellipsis at the end of the headline.
+  if (/[［\\[]\\s*20\\d{2}年\\d{1,2}月\\d{1,2}日/.test(t)) return true;
+  if (/(?:\\.\\.\\.|…|・・・)$/.test(t)) return true;
+
+  // Short headline-shaped blocks without sentence-ending punctuation.
+  if (t.length <= 120 && !/[。！？]$/.test(t)) return true;
+
+  return false;
+}
+
 function splitArticleBody(text) {
   return String(text)
     .replace(/\r/g, "")
@@ -108,15 +123,22 @@ function splitArticleBody(text) {
     .filter(p => p.length >= 20 && !badBlock(p));
 }
 
-function keepEditorialBody(paragraphs) {
+function keepEditorialBody(paragraphs, sourceUrl = "") {
   const editorial = [];
   let headlineRun = 0;
+  const isSponichi = /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
 
   for (const p of paragraphs) {
-    if (looksLikeRelatedHeadline(p)) {
+    const related = isSponichi
+      ? looksLikeSponichiRelated(p)
+      : looksLikeRelatedHeadline(p);
+
+    if (related) {
       headlineRun++;
-      // A run of headline-like blocks after real paragraphs is a strong
-      // signal that the publisher has entered a related-news module.
+      // For Sponichi, the first strong related-story block after the
+      // article paragraphs is the boundary. Do not let later headlines
+      // leak into the draft.
+      if (isSponichi && editorial.length >= 2) break;
       if (editorial.length >= 3 && headlineRun >= 2) break;
       continue;
     }
@@ -157,7 +179,7 @@ function extractArticle($, sourceUrl) {
   // modules that are often nested inside the visible article container.
   if (jsonLd?.articleBody && jsonLd.articleBody.length > 100) {
     const paragraphs = splitArticleBody(jsonLd.articleBody);
-    const editorial = keepEditorialBody(paragraphs);
+    const editorial = keepEditorialBody(paragraphs, sourceUrl);
     if (editorial.length >= 2) {
       return { title, image, paragraphs: editorial };
     }
@@ -227,6 +249,8 @@ function extractArticle($, sourceUrl) {
 
     if (item.headlineLike) {
       headlineRun++;
+      const sponichi = /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
+      if (sponichi && paragraphs.length >= 2) break;
       if (paragraphs.length >= 3 && headlineRun >= 2) break;
       continue;
     }
