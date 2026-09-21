@@ -3,28 +3,68 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>ALIFO AI 記事編集部</title>
+  <title>ALIFO AI｜記事編集部</title>
   <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-  <header><div class="logo">A</div><div><b>ALIFO AI</b><span> 記事編集部</span></div></header>
+  <header>
+    <div class="logo">A</div>
+    <div>
+      <b>ALIFO AI</b>
+      <span>記事編集部</span>
+    </div>
+    <div class="header-status">OPENAI API 不使用</div>
+  </header>
+
   <main>
     <section class="hero">
+      <div class="eyebrow">AI ARTICLE EDITOR</div>
       <h1>AI記事編集部</h1>
-      <p>URLやRSSから情報を取り込み、AIが記事ドラフトを作成。公開前に人が審査できます。</p>
+      <p>URLやRSSからWeb情報を取得し、自動で記事ドラフトを作成。公開前に人が確認できます。</p>
+    </section>
+
+    <section class="dashboard">
+      <div class="stat">
+        <span>審査待ち</span>
+        <strong id="statReview">0</strong>
+      </div>
+      <div class="stat">
+        <span>RSS登録</span>
+        <strong id="statSources">0</strong>
+      </div>
+      <div class="stat">
+        <span>方式</span>
+        <strong class="small">自動編集</strong>
+      </div>
     </section>
 
     <section class="panel">
-      <h2>① URLから記事を作る</h2>
+      <div class="panel-title">
+        <div>
+          <span class="step">01</span>
+          <div>
+            <h2>URLから記事を作成</h2>
+            <p>ニュースページなどのURLを入力</p>
+          </div>
+        </div>
+      </div>
       <div class="row">
         <input id="url" placeholder="https://example.com/news/..." />
-        <button onclick="generate()">記事を生成</button>
+        <button onclick="generate()">記事を作成</button>
       </div>
-      <small>ページ本文とOG画像などを取得し、審査待ちボックスへ入れます。</small>
+      <small>本文・タイトル・OG画像などを取得して審査待ちに追加します。</small>
     </section>
 
     <section class="panel">
-      <h2>② RSSを登録</h2>
+      <div class="panel-title">
+        <div>
+          <span class="step">02</span>
+          <div>
+            <h2>RSSを登録</h2>
+            <p>登録したRSSは後から巡回できます</p>
+          </div>
+        </div>
+      </div>
       <div class="row">
         <input id="rss" placeholder="https://example.com/feed.xml" />
         <button onclick="addRss()">RSSを登録</button>
@@ -35,12 +75,16 @@
 
     <section>
       <div class="section-head">
-        <h2>③ 審査待ちボックス <span id="count">0</span></h2>
-        <button class="secondary" onclick="loadQueue()">更新</button>
+        <div>
+          <span class="step">03</span>
+          <h2>審査待ちボックス</h2>
+        </div>
+        <button class="secondary" onclick="loadAll()">更新</button>
       </div>
       <div id="queue"></div>
     </section>
   </main>
+
   <script src="/app.js"></script>
 </body>
 </html>

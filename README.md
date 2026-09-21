@@ -1,22 +1,24 @@
 # ALIFO AI Article Editor
 
-URL / RSS → Web情報取得 → AI記事生成 → 審査待ちボックス
+URL / RSS → Web情報取得 → 自動記事編集 → 審査待ちボックス
+
+## OpenAI APIについて
+
+この版は **OpenAI APIを使用しません**。
+取得したWeb本文を、重複除去・段落整理・要約・見出し化して記事ドラフトにします。
+
+そのため `OPENAI_API_KEY` と `OPENAI_MODEL` は不要です。
 
 ## Render
+
 - Build Command: `npm install`
 - Start Command: `npm start`
-- Environment Variables:
-  - `OPENAI_API_KEY`
-  - `OPENAI_MODEL` (optional)
-  - `CRON_SECRET`
 
-## GitHub Actions
-Repository Secrets に以下を登録:
-- `ALIFO_ARTICLE_EDITOR_URL` = RenderのサービスURL
-- `ALIFO_CRON_SECRET` = Render側のCRON_SECRETと同じ値
+必要な環境変数:
 
-1時間ごとにRSS巡回します。
+- `CRON_SECRET`（任意。GitHub Actionsなど外部から定期巡回する場合は設定推奨）
 
 ## 注意
+
 取得した本文・画像の利用権限は、元サイトの利用規約・著作権・ライセンスを確認してください。
-このMVPは画像を元ページのURLから表示します。画像を自サーバーへ無断転載する仕様にはしていません。
+画像は元ページのURLを表示する方式です。
