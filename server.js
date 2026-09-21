@@ -106,8 +106,8 @@ function looksLikeSponichiRelated(text) {
 
   // Sponichi related-story modules commonly include a date in brackets
   // and/or an ellipsis at the end of the headline.
-  if (/[［\\[]\\s*20\\d{2}年\\d{1,2}月\\d{1,2}日/.test(t)) return true;
-  if (/(?:\\.\\.\\.|…|・・・)$/.test(t)) return true;
+  if (/[［\[]\s*20\d{2}年\d{1,2}月\d{1,2}日/.test(t)) return true;
+  if (/(?:\.\.\.|…|・・・)$/.test(t)) return true;
 
   // Short headline-shaped blocks without sentence-ending punctuation.
   if (t.length <= 120 && !/[。！？]$/.test(t)) return true;
@@ -126,7 +126,7 @@ function splitArticleBody(text) {
 function keepEditorialBody(paragraphs, sourceUrl = "") {
   const editorial = [];
   let headlineRun = 0;
-  const isSponichi = /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
+  const isSponichi = /(?:^|\.)sponichi\.co\.jp$/i.test(new URL(sourceUrl).hostname);
 
   for (const p of paragraphs) {
     const related = isSponichi
@@ -249,7 +249,7 @@ function extractArticle($, sourceUrl) {
 
     if (item.headlineLike) {
       headlineRun++;
-      const sponichi = /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
+      const sponichi = /(?:^|\.)sponichi\.co\.jp$/i.test(new URL(sourceUrl).hostname);
       if (sponichi && paragraphs.length >= 2) break;
       if (paragraphs.length >= 3 && headlineRun >= 2) break;
       continue;
