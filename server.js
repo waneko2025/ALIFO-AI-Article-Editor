@@ -85,10 +85,15 @@ function looksLikeRelatedHeadline(text) {
   // News-site related links are commonly short headline-like strings.
   // Real article paragraphs usually contain sentence punctuation.
   const hasSentencePunctuation = /[。！？]/.test(t);
+  const hasSentenceEnding = /[。！？]$/.test(t);
   const hasQuote = /[「」『』]/.test(t);
   const hasUrl = /^https?:\/\//i.test(t);
+  const hasEllipsis = /(\.\.\.|…|・・・)$/.test(t);
 
   if (hasUrl) return true;
+  // Related-news links on Japanese news sites often end with an ellipsis.
+  if (hasEllipsis) return true;
+  if (!hasSentenceEnding && t.length <= 110) return true;
   if (!hasSentencePunctuation && hasQuote) return true;
   if (!hasSentencePunctuation && /^[^。！？]+$/.test(t)) return true;
 
