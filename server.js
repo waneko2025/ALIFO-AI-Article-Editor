@@ -54,8 +54,43 @@ function blockScore($el, text) {
   return score;
 }
 
+function extractJsonLdArticle($) {
+  const candidates = [];
+  $('script[type="application/ld+json"]').each((_, el) => {
+    const raw = $(el).contents().text();
+    if (!raw) return;
+    try {
+      const parsed = JSON.parse(raw);
+      const list = Array.isArray(parsed) ? parsed : (Array.isArray(parsed["@graph"]) ? parsed["@graph"] : [parsed]);
+      for (const item of list) {
+        if (!item || typeof item !== "object") continue;
+        const type = Array.isArray(item["@type"]) ? item["@type"].join(" ") : String(item["@type"] || "");
+        if (/NewsArticle|Article|ReportageNewsArticle|BlogPosting/i.test(type) && item.articleBody) {
+          candidates.push({
+            headline: cleanText(item.headline || ""),
+            image: Array.isArray(item.image) ? item.image[0] : (typeof item.image === "object" ? item.image?.url : item.image),
+            articleBody: String(item.articleBody)
+          });
+        }
+      }
+    } catch {}
+  });
+  return candidates.sort((a,b) => b.articleBody.length - a.articleBody.length)[0] || null;
+}
+
+function splitArticleBody(text) {
+  return String(text)
+    .replace(/\r/g, "")
+    .split(/\n+|(?<=[。！？])\s+(?=[^\s])/)
+    .map(cleanText)
+    .filter(p => p.length >= 20 && !badBlock(p));
+}
+
 function extractArticle($, sourceUrl) {
+  const jsonLd = extractJsonLdArticle($);
+
   const title = cleanText(
+    jsonLd?.headline ||
     $('meta[property="og:title"]').attr("content") ||
     $('meta[name="twitter:title"]').attr("content") ||
     $("article h1").first().text() ||
@@ -65,6 +100,7 @@ function extractArticle($, sourceUrl) {
   );
 
   let image = absoluteUrl(
+    jsonLd?.image ||
     $('meta[property="og:image"]').attr("content") ||
     $('meta[name="twitter:image"]').attr("content") ||
     $("article img").first().attr("src") ||
@@ -72,11 +108,20 @@ function extractArticle($, sourceUrl) {
     sourceUrl
   );
 
+  // When the publisher exposes articleBody in JSON-LD, use that as the
+  // authoritative body. This avoids menus, related stories and ranking
+  // modules that are often nested inside the visible article container.
+  if (jsonLd?.articleBody && jsonLd.articleBody.length > 100) {
+    const paragraphs = splitArticleBody(jsonLd.articleBody);
+    if (paragraphs.length >= 2) return { title, image, paragraphs: paragraphs.slice(0, 40) };
+  }
+
   const selectors = [
-    "article", "main", "[role='main']", ".article-body", ".article-content",
-    ".post-content", ".entry-content", ".story-body", ".news-detail",
-    ".news-article", ".article__body", ".articleDetail", ".article"
+    "article", ".article-body", ".article-content", ".post-content",
+    ".entry-content", ".story-body", ".news-detail", ".news-article",
+    ".article__body", ".articleDetail", "main", "[role='main']", ".article"
   ];
+
   let container = null;
   for (const selector of selectors) {
     const node = $(selector).first();
@@ -87,6 +132,8 @@ function extractArticle($, sourceUrl) {
   }
   if (!container) container = $("body");
 
+  // Cut off common "related content" sections even when they are nested
+  // inside the article element.
   container.find([
     "script","style","noscript","template","svg","iframe","nav","header","footer","form",
     ".related",".related-articles",".recommend",".recommendations",".ranking",".sidebar",
@@ -94,6 +141,14 @@ function extractArticle($, sourceUrl) {
     ".ads",".banner",".pickup",".latest",".comments",".comment",".newsletter",".cookie",
     ".modal",".popup",".menu"
   ].join(",")).remove();
+
+  container.find("h2,h3").each((_, el) => {
+    const heading = cleanText($(el).text());
+    if (/関連記事|関連ニュース|おすすめ|ランキング|最新ニュース|ピックアップ|こちらも/i.test(heading)) {
+      $(el).nextAll().remove();
+      $(el).remove();
+    }
+  });
 
   const raw = [];
   container.find("p,h2,h3,blockquote,li").each((_, el) => {
