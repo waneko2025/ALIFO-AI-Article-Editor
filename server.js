@@ -275,6 +275,46 @@ function extractArticle($, sourceUrl) {
   return { title, image, paragraphs };
 }
 
+function cleanDraftBody(body, sourceUrl = "") {
+  const text = String(body || "").replace(/\r/g, "");
+  const isSponichi = (() => {
+    try { return /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname); }
+    catch { return false; }
+  })();
+
+  if (!isSponichi) return text;
+
+  const lines = text.split("\\n");
+  const out = [];
+  let inDetail = false;
+
+  for (const line of lines) {
+    const t = cleanText(line);
+
+    if (t === "【詳細】") {
+      inDetail = true;
+      out.push(line);
+      continue;
+    }
+    if (t === "【出典】") {
+      inDetail = false;
+      out.push(line);
+      continue;
+    }
+
+    if (inDetail && t) {
+      // Remove Sponichi related-story headlines from existing drafts too.
+      if (looksLikeSponichiRelated(t)) continue;
+      if (/[［\\[]\\s*20\\d{2}年\\d{1,2}月\\d{1,2}日/.test(t)) continue;
+      if (/(?:\\.\\.\\.|…|・・・)$/.test(t)) continue;
+    }
+
+    out.push(line);
+  }
+
+  return out.join("\\n");
+}
+
 function makeSummary(paragraphs, max = 220) {
   const text = paragraphs.slice(0, 3).join(" ");
   if (!text) return "本文を十分に取得できませんでした。内容を確認してください。";
@@ -330,7 +370,19 @@ function newQueueItem(source) {
 }
 
 app.get("/api/health", (_req,res) => res.json({ ok:true, name:"ALIFO AI Article Editor", aiApi:false }));
-app.get("/api/queue", async (_req,res) => res.json((await loadData()).queue));
+app.get("/api/queue", async (_req,res) => {
+  const data = await loadData();
+  let changed = false;
+  for (const item of data.queue) {
+    const cleaned = cleanDraftBody(item.body, item.source?.url || "");
+    if (cleaned !== item.body) {
+      item.body = cleaned;
+      changed = true;
+    }
+  }
+  if (changed) await saveData(data);
+  res.json(data.queue);
+});
 app.get("/api/sources", async (_req,res) => res.json((await loadData()).sources));
 
 app.post("/api/generate", async (req,res) => {
@@ -398,7 +450,7 @@ app.patch("/api/queue/:id", async (req,res) => {
   const item = data.queue[index];
   item.title = req.body.title ?? item.title;
   item.summary = req.body.summary ?? item.summary;
-  item.body = req.body.body ?? item.body;
+  item.body = cleanDraftBody(req.body.body ?? item.body, item.source?.url || "");
   if (req.body.action === "approve") {
     item.status = "approved";
     data.queue.splice(index,1);
