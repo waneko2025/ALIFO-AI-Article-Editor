@@ -100,7 +100,29 @@ function splitArticleBody(text) {
     .replace(/\r/g, "")
     .split(/\n+/)
     .map(cleanText)
-    .filter(p => p.length >= 20 && !badBlock(p) && !looksLikeRelatedHeadline(p));
+    .filter(p => p.length >= 20 && !badBlock(p));
+}
+
+function keepEditorialBody(paragraphs) {
+  const editorial = [];
+  let headlineRun = 0;
+
+  for (const p of paragraphs) {
+    if (looksLikeRelatedHeadline(p)) {
+      headlineRun++;
+      // A run of headline-like blocks after real paragraphs is a strong
+      // signal that the publisher has entered a related-news module.
+      if (editorial.length >= 3 && headlineRun >= 2) break;
+      continue;
+    }
+
+    headlineRun = 0;
+    editorial.push(p);
+
+    if (editorial.length >= 40) break;
+  }
+
+  return editorial;
 }
 
 function extractArticle($, sourceUrl) {
@@ -130,23 +152,7 @@ function extractArticle($, sourceUrl) {
   // modules that are often nested inside the visible article container.
   if (jsonLd?.articleBody && jsonLd.articleBody.length > 100) {
     const paragraphs = splitArticleBody(jsonLd.articleBody);
-
-    // Keep only a contiguous editorial body. Once several consecutive
-    // headline-like blocks appear, the publisher has usually switched to
-    // related stories / recommendations.
-    const editorial = [];
-    let shortRun = 0;
-    for (const p of paragraphs) {
-      if (looksLikeRelatedHeadline(p)) {
-        shortRun++;
-        if (shortRun >= 2 && editorial.length >= 3) break;
-        continue;
-      }
-      shortRun = 0;
-      editorial.push(p);
-      if (editorial.length >= 40) break;
-    }
-
+    const editorial = keepEditorialBody(paragraphs);
     if (editorial.length >= 2) {
       return { title, image, paragraphs: editorial };
     }
@@ -190,16 +196,12 @@ function extractArticle($, sourceUrl) {
   container.find("p,h2,h3,blockquote,li").each((_, el) => {
     const $el = $(el);
     const text = cleanText($el.text());
-    if (badBlock(text) || looksLikeRelatedHeadline(text)) return;
+    if (badBlock(text)) return;
 
     const score = blockScore($el, text);
     if (score < 2) return;
 
-    // For paragraph extraction, sentence punctuation is a strong signal
-    // that the block belongs to the actual article rather than a link list.
-    if (el.name === "p" && !/[。！？]/.test(text) && text.length < 100) return;
-
-    raw.push({ text, score, tag: el.name });
+    raw.push({ text, score, tag: el.name, headlineLike: looksLikeRelatedHeadline(text) });
   });
 
   const seen = new Set();
@@ -213,15 +215,28 @@ function extractArticle($, sourceUrl) {
 
   const paragraphs = [];
   let weak = 0;
+  let headlineRun = 0;
+
   for (const item of unique) {
     if (item.tag === "li") continue;
+
+    if (item.headlineLike) {
+      headlineRun++;
+      if (paragraphs.length >= 3 && headlineRun >= 2) break;
+      continue;
+    }
+
+    headlineRun = 0;
+
     if (item.score < 4) {
       weak++;
       if (weak >= 3 && paragraphs.length >= 4) break;
       continue;
     }
+
     weak = 0;
     paragraphs.push(item.text);
+
     if (paragraphs.length >= 35) break;
   }
 
