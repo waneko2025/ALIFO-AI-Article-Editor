@@ -7,295 +7,270 @@ import crypto from "node:crypto";
 const app = express();
 const PORT = process.env.PORT || 3000;
 const DATA_FILE = "./data.json";
-const parser = new Parser();
+const parser = new Parser({
+  timeout: 15000,
+  headers: { "User-Agent": "Mozilla/5.0 (compatible; ALIFO-AI-Article-Editor/3.0)" }
+});
 
 app.use(express.json({ limit: "2mb" }));
 app.use(express.static("public"));
 
 async function loadData() {
   try {
-    return JSON.parse(await fs.readFile(DATA_FILE, "utf8"));
+    const d = JSON.parse(await fs.readFile(DATA_FILE, "utf8"));
+    return {
+      sources: Array.isArray(d.sources) ? d.sources : [],
+      queue: Array.isArray(d.queue) ? d.queue : [],
+      published: Array.isArray(d.published) ? d.published : []
+    };
   } catch {
     return { sources: [], queue: [], published: [] };
   }
 }
-
-async function saveData(data) {
-  await fs.writeFile(DATA_FILE, JSON.stringify(data, null, 2), "utf8");
+async function saveData(d) {
+  await fs.writeFile(DATA_FILE, JSON.stringify(d, null, 2), "utf8");
 }
-
 function cleanText(s = "") {
-  return String(s)
-    .replace(/\u00a0/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  return String(s).replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+function absoluteUrl(src, base) {
+  try { return src ? new URL(src, base).href : ""; } catch { return ""; }
+}
+function badBlock(text) {
+  const t = cleanText(text);
+  if (!t || t.length < 20) return true;
+  return /関連記事|関連ニュース|おすすめ記事|おすすめ|ランキング|ニュース一覧|最新ニュース|広告|スポンサー|PR記事|ログイン|会員登録|サイトマップ|プライバシーポリシー|利用規約|Copyright|Follow us/i.test(t);
+}
+function blockScore($el, text) {
+  const tag = ($el[0]?.name || "").toLowerCase();
+  const cls = String($el.attr("class") || "") + " " + String($el.attr("id") || "");
+  const t = cleanText(text);
+  let score = tag === "p" ? 5 : tag === "blockquote" ? 4 : tag.startsWith("h") ? 1 : 0;
+  if (t.length >= 50) score += 3;
+  if ((t.match(/[。！？]/g) || []).length >= 2) score += 2;
+  if (/related|recommend|ranking|sidebar|footer|header|nav|menu|social|sns|share|advert|banner|pickup|latest|breadcrumb|comment|newsletter|cookie|popup/i.test(cls)) score -= 12;
+  if (/^https?:\/\//i.test(t)) score -= 10;
+  if (tag === "li" && t.length < 45) score -= 6;
+  return score;
 }
 
-function normalizeImage(src, baseUrl) {
-  if (!src) return "";
-  try {
-    return new URL(src, baseUrl).href;
-  } catch {
-    return "";
+function extractArticle($, sourceUrl) {
+  const title = cleanText(
+    $('meta[property="og:title"]').attr("content") ||
+    $('meta[name="twitter:title"]').attr("content") ||
+    $("article h1").first().text() ||
+    $("main h1").first().text() ||
+    $("h1").first().text() ||
+    $("title").first().text() || "無題の記事"
+  );
+
+  let image = absoluteUrl(
+    $('meta[property="og:image"]').attr("content") ||
+    $('meta[name="twitter:image"]').attr("content") ||
+    $("article img").first().attr("src") ||
+    $("main img").first().attr("src"),
+    sourceUrl
+  );
+
+  const selectors = [
+    "article", "main", "[role='main']", ".article-body", ".article-content",
+    ".post-content", ".entry-content", ".story-body", ".news-detail",
+    ".news-article", ".article__body", ".articleDetail", ".article"
+  ];
+  let container = null;
+  for (const selector of selectors) {
+    const node = $(selector).first();
+    if (node.length && cleanText(node.text()).length > 250) {
+      container = node;
+      break;
+    }
   }
+  if (!container) container = $("body");
+
+  container.find([
+    "script","style","noscript","template","svg","iframe","nav","header","footer","form",
+    ".related",".related-articles",".recommend",".recommendations",".ranking",".sidebar",
+    ".breadcrumb",".breadcrumbs",".share",".social",".sns",".advert",".advertisement",
+    ".ads",".banner",".pickup",".latest",".comments",".comment",".newsletter",".cookie",
+    ".modal",".popup",".menu"
+  ].join(",")).remove();
+
+  const raw = [];
+  container.find("p,h2,h3,blockquote,li").each((_, el) => {
+    const $el = $(el);
+    const text = cleanText($el.text());
+    if (badBlock(text)) return;
+    const score = blockScore($el, text);
+    if (score < 2) return;
+    raw.push({ text, score, tag: el.name });
+  });
+
+  const seen = new Set();
+  const unique = [];
+  for (const item of raw) {
+    const key = item.text.replace(/[\s「」『』（）()【】]/g, "");
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(item);
+  }
+
+  const paragraphs = [];
+  let weak = 0;
+  for (const item of unique) {
+    if (item.tag === "li") continue;
+    if (item.score < 4) {
+      weak++;
+      if (weak >= 3 && paragraphs.length >= 4) break;
+      continue;
+    }
+    weak = 0;
+    paragraphs.push(item.text);
+    if (paragraphs.length >= 35) break;
+  }
+
+  if (paragraphs.length < 3) {
+    return { title, image, paragraphs: unique.slice(0, 20).map(x => x.text) };
+  }
+  return { title, image, paragraphs };
+}
+
+function makeSummary(paragraphs, max = 220) {
+  const text = paragraphs.slice(0, 3).join(" ");
+  if (!text) return "本文を十分に取得できませんでした。内容を確認してください。";
+  return text.length > max ? text.slice(0, max).replace(/[^。！？]*$/, "") + "…" : text;
+}
+function makeTitle(title) {
+  return cleanText(title)
+    .replace(/\s*[|｜]\s*[^|｜]+$/, "")
+    .replace(/\s+-\s+[^-]+$/, "")
+    .trim() || "Web記事ドラフト";
+}
+function makeBody(paragraphs, url) {
+  const ps = paragraphs.filter(p => p.length >= 25).slice(0, 24);
+  const out = ["【記事のポイント】", "", makeSummary(ps), "", "【詳細】", ""];
+  for (const p of ps) out.push(p, "");
+  out.push("【出典】", "", url);
+  return out.join("\n").trim();
 }
 
 async function fetchArticle(url) {
   const parsed = new URL(url);
-  if (!["http:", "https:"].includes(parsed.protocol)) {
-    throw new Error("http / https のURLだけ利用できます");
-  }
-
+  if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("http / https のURLだけ利用できます");
   const res = await fetch(url, {
-    headers: {
-      "User-Agent": "ALIFO-AI-Article-Editor/2.0 (+article-editor)"
-    },
-    redirect: "follow"
+    redirect: "follow",
+    headers: { "User-Agent": "Mozilla/5.0 (compatible; ALIFO-AI-Article-Editor/3.0)" },
+    signal: AbortSignal.timeout(20000)
   });
-
   if (!res.ok) throw new Error(`URL取得失敗: ${res.status}`);
   const html = await res.text();
   const $ = cheerio.load(html);
-
-  $("script,style,noscript,nav,footer,header,form,svg").remove();
-
-  const title = cleanText(
-    $('meta[property="og:title"]').attr("content") ||
-    $('meta[name="twitter:title"]').attr("content") ||
-    $("h1").first().text() ||
-    $("title").text() ||
-    "無題の記事"
-  );
-
-  const image = normalizeImage(
-    $('meta[property="og:image"]').attr("content") ||
-    $('meta[name="twitter:image"]').attr("content") ||
-    $("article img").first().attr("src") ||
-    $("main img").first().attr("src") ||
-    $("img").first().attr("src"),
-    url
-  );
-
-  const paragraphs = $("article p, main p, [role='main'] p, .article p, .post p, p")
-    .map((_, el) => cleanText($(el).text()))
-    .get()
-    .filter(x => x.length >= 20)
-    .filter((x, i, a) => a.indexOf(x) === i)
-    .slice(0, 100);
-
-  const text = paragraphs.join("\n");
-
-  if (!text && !title) {
-    throw new Error("ページから記事情報を取得できませんでした");
-  }
-
-  return { url, title, image, text };
-}
-
-/*
- * OpenAI等の外部AI APIを使わない記事編集エンジン。
- * 取得した本文を、重複除去・段落整理・要約・見出し化して
- * 「審査待ち」に入れます。
- */
-function makeSummary(text, max = 150) {
-  const s = cleanText(text);
-  if (!s) return "本文を取得できませんでした。";
-  if (s.length <= max) return s;
-  return s.slice(0, max).replace(/[、。！？]?[^\s、。！？]*$/, "") + "…";
-}
-
-function makeTitle(sourceTitle) {
-  let t = cleanText(sourceTitle)
-    .replace(/\s*[\|｜]\s*[^|｜]+$/, "")
-    .replace(/\s*-\s*[^-]+$/, "")
-    .trim();
-  if (!t) t = "Web記事ドラフト";
-  return t;
-}
-
-function makeBody(source) {
-  const paragraphs = source.text
-    .split("\n")
-    .map(cleanText)
-    .filter(Boolean)
-    .slice(0, 60);
-
-  const chunks = [];
-  let current = [];
-
-  for (const p of paragraphs) {
-    current.push(p);
-    if (current.join("").length >= 220) {
-      chunks.push(current.join("\n\n"));
-      current = [];
-    }
-  }
-  if (current.length) chunks.push(current.join("\n\n"));
-
-  const intro = makeSummary(source.text, 180);
-
-  let body = `## この記事のポイント\n\n${intro}\n\n`;
-
-  if (chunks.length) {
-    body += `## 詳細\n\n`;
-    body += chunks.join("\n\n");
-  } else {
-    body += source.text || "本文を取得できませんでした。";
-  }
-
-  body += `\n\n## 参照元\n\n${source.url}`;
-  return body;
-}
-
-function generateArticle(source) {
+  const finalUrl = res.url || url;
+  const extracted = extractArticle($, finalUrl);
+  if (extracted.paragraphs.length < 2) throw new Error("記事本文を十分に抽出できませんでした。別のURLを試してください。");
   return {
-    title: makeTitle(source.title),
-    summary: makeSummary(source.text),
-    body: makeBody(source),
-    image: source.image
+    url: finalUrl,
+    title: makeTitle(extracted.title),
+    image: extracted.image,
+    text: extracted.paragraphs.join("\n")
   };
 }
-
 function newQueueItem(source) {
+  const paragraphs = source.text.split("\n").map(cleanText).filter(Boolean);
   return {
     id: crypto.randomUUID(),
     status: "review",
     createdAt: new Date().toISOString(),
     source,
-    ...generateArticle(source)
+    title: source.title,
+    summary: makeSummary(paragraphs),
+    body: makeBody(paragraphs, source.url),
+    image: source.image || ""
   };
 }
 
-app.get("/api/health", (_req, res) => {
-  res.json({ ok: true, name: "ALIFO AI Article Editor", aiApi: false });
-});
+app.get("/api/health", (_req,res) => res.json({ ok:true, name:"ALIFO AI Article Editor", aiApi:false }));
+app.get("/api/queue", async (_req,res) => res.json((await loadData()).queue));
+app.get("/api/sources", async (_req,res) => res.json((await loadData()).sources));
 
-app.get("/api/queue", async (_req, res) => {
-  const data = await loadData();
-  res.json(data.queue);
-});
-
-app.post("/api/generate", async (req, res) => {
+app.post("/api/generate", async (req,res) => {
   try {
-    if (!req.body?.url) return res.status(400).json({ error: "URLが必要です" });
+    if (!req.body?.url) return res.status(400).json({error:"URLが必要です"});
     const source = await fetchArticle(req.body.url);
-    const item = newQueueItem(source);
-
     const data = await loadData();
+    const item = newQueueItem(source);
     data.queue.unshift(item);
     await saveData(data);
-
     res.json(item);
   } catch (e) {
-    res.status(500).json({ error: e.message || "記事生成に失敗しました" });
+    res.status(500).json({error:e.message || "記事生成に失敗しました"});
   }
 });
 
-app.post("/api/rss", async (req, res) => {
+app.post("/api/sources", async (req,res) => {
   try {
-    if (!req.body?.url) return res.status(400).json({ error: "RSS URLが必要です" });
-
-    const feed = await parser.parseURL(req.body.url);
+    if (!req.body?.url) return res.status(400).json({error:"RSS URLが必要です"});
+    const url = String(req.body.url).trim();
+    await parser.parseURL(url);
     const data = await loadData();
-    const added = [];
-
-    for (const item of (feed.items || []).slice(0, 10)) {
-      if (!item.link) continue;
-      if (data.queue.some(x => x.source?.url === item.link)) continue;
-
-      try {
-        const source = await fetchArticle(item.link);
-        const row = newQueueItem(source);
-        data.queue.unshift(row);
-        added.push(row);
-      } catch (e) {
-        console.warn("RSS item skipped:", item.link, e.message);
-      }
-    }
-
+    if (!data.sources.some(s => s.url === url)) data.sources.push({id:crypto.randomUUID(), url});
     await saveData(data);
-    res.json({ count: added.length, items: added });
+    res.json(data.sources);
   } catch (e) {
-    res.status(500).json({ error: e.message || "RSS取得に失敗しました" });
+    res.status(500).json({error:e.message || "RSS登録に失敗しました"});
   }
 });
 
-app.patch("/api/queue/:id", async (req, res) => {
+async function pollSource(source, data) {
+  const feed = await parser.parseURL(source.url);
+  let added = 0;
+  for (const item of (feed.items || []).slice(0,10)) {
+    if (!item.link) continue;
+    if (data.queue.some(x => x.source?.url === item.link) || data.published.some(x => x.source?.url === item.link)) continue;
+    try {
+      const sourceData = await fetchArticle(item.link);
+      data.queue.unshift(newQueueItem(sourceData));
+      added++;
+    } catch (e) {
+      console.warn("RSS item skipped:", item.link, e.message);
+    }
+  }
+  return added;
+}
+
+app.post("/api/cron", async (req,res) => {
+  if (process.env.CRON_SECRET && req.get("x-cron-secret") !== process.env.CRON_SECRET) return res.status(401).json({error:"Unauthorized"});
+  try {
+    const data = await loadData();
+    let added = 0;
+    for (const source of data.sources) added += await pollSource(source, data);
+    await saveData(data);
+    res.json({added});
+  } catch (e) {
+    res.status(500).json({error:e.message || "RSS巡回に失敗しました"});
+  }
+});
+
+app.patch("/api/queue/:id", async (req,res) => {
   const data = await loadData();
-  const item = data.queue.find(x => x.id === req.params.id);
-  if (!item) return res.status(404).json({ error: "記事がありません" });
-
-  Object.assign(item, {
-    title: req.body.title ?? item.title,
-    summary: req.body.summary ?? item.summary,
-    body: req.body.body ?? item.body
-  });
-
+  const index = data.queue.findIndex(x => x.id === req.params.id);
+  if (index < 0) return res.status(404).json({error:"記事がありません"});
+  const item = data.queue[index];
+  item.title = req.body.title ?? item.title;
+  item.summary = req.body.summary ?? item.summary;
+  item.body = req.body.body ?? item.body;
   if (req.body.action === "approve") {
     item.status = "approved";
+    data.queue.splice(index,1);
     data.published.unshift(item);
   } else if (req.body.action === "reject") {
     item.status = "rejected";
-  } else if (req.body.action === "review") {
+    data.queue.splice(index,1);
+  } else {
     item.status = "review";
   }
-
+  item.updatedAt = new Date().toISOString();
   await saveData(data);
   res.json(item);
 });
 
-app.post("/api/cron", async (req, res) => {
-  if (
-    process.env.CRON_SECRET &&
-    req.get("x-cron-secret") !== process.env.CRON_SECRET
-  ) {
-    return res.status(401).json({ error: "Unauthorized" });
-  }
-
-  const data = await loadData();
-  const results = [];
-
-  for (const s of data.sources) {
-    try {
-      const feed = await parser.parseURL(s.url);
-
-      for (const item of (feed.items || []).slice(0, 5)) {
-        if (!item.link || data.queue.some(x => x.source?.url === item.link)) continue;
-
-        try {
-          const source = await fetchArticle(item.link);
-          data.queue.unshift(newQueueItem(source));
-          results.push(item.link);
-        } catch (e) {
-          results.push(`ERROR: ${item.link} ${e.message}`);
-        }
-      }
-    } catch (e) {
-      results.push(`ERROR: ${s.url} ${e.message}`);
-    }
-  }
-
-  await saveData(data);
-  res.json({ added: results });
-});
-
-app.get("/api/sources", async (_req, res) => {
-  const data = await loadData();
-  res.json(data.sources);
-});
-
-app.post("/api/sources", async (req, res) => {
-  if (!req.body?.url) return res.status(400).json({ error: "RSS URLが必要です" });
-
-  const data = await loadData();
-  if (!data.sources.some(s => s.url === req.body.url)) {
-    data.sources.push({ id: crypto.randomUUID(), url: req.body.url });
-    await saveData(data);
-  }
-
-  res.json(data.sources);
-});
-
-app.listen(PORT, () => {
-  console.log(`ALIFO Article Editor listening on ${PORT}`);
-});
+app.listen(PORT, () => console.log(`ALIFO Article Editor listening on ${PORT}`));
