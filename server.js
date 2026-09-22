@@ -354,6 +354,24 @@ function makeBody(paragraphs, url) {
   return out.join("\n").trim();
 }
 
+function isSponichiUrl(sourceUrl = "") {
+  try {
+    return /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function needsSponichiRepair(item) {
+  if (!isSponichiUrl(item?.source?.url || "")) return false;
+  const body = String(item?.body || "");
+  const detail = body.split("【詳細】")[1]?.split("【出典】")[0] || "";
+  const lines = detail.split(/\\r?\\n/).map(cleanText).filter(Boolean);
+  if (lines.length < 2) return true;
+  const relatedCount = lines.filter(looksLikeSponichiRelated).length;
+  return relatedCount >= Math.max(2, Math.ceil(lines.length * 0.6));
+}
+
 async function fetchArticle(url) {
   const parsed = new URL(url);
   if (!["http:", "https:"].includes(parsed.protocol)) throw new Error("http / https のURLだけ利用できます");
@@ -393,13 +411,32 @@ app.get("/api/health", (_req,res) => res.json({ ok:true, name:"ALIFO AI Article 
 app.get("/api/queue", async (_req,res) => {
   const data = await loadData();
   let changed = false;
+
   for (const item of data.queue) {
     const cleaned = cleanDraftBody(item.body, item.source?.url || "");
     if (cleaned !== item.body) {
       item.body = cleaned;
       changed = true;
     }
+
+    // Repair old Sponichi drafts that were created before the extractor fix.
+    // Re-fetch the original article and rebuild the draft from the source.
+    if (item.status === "review" && needsSponichiRepair(item) && item.source?.url) {
+      try {
+        const source = await fetchArticle(item.source.url);
+        item.source = source;
+        item.title = source.title;
+        item.summary = makeSummary(source.text.split("\\n").map(cleanText).filter(Boolean));
+        item.body = makeBody(source.text.split("\\n").map(cleanText).filter(Boolean), source.url);
+        item.image = source.image || item.image || "";
+        item.updatedAt = new Date().toISOString();
+        changed = true;
+      } catch (e) {
+        console.warn("Sponichi draft repair skipped:", item.source.url, e.message);
+      }
+    }
   }
+
   if (changed) await saveData(data);
   res.json(data.queue);
 });
