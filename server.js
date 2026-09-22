@@ -290,14 +290,15 @@ function cleanDraftBody(body, sourceUrl = "") {
   const lines = text.split("\n");
   const out = [];
   let inDetail = false;
+  let skipRelated = false;
   let editorialLines = 0;
-  let stoppedBeforeRelated = false;
 
   for (const line of lines) {
     const t = cleanText(line);
 
     if (t === "【詳細】") {
       inDetail = true;
+      skipRelated = false;
       editorialLines = 0;
       out.push(line);
       continue;
@@ -305,18 +306,20 @@ function cleanDraftBody(body, sourceUrl = "") {
 
     if (t === "【出典】") {
       inDetail = false;
+      skipRelated = false;
       out.push(line);
       continue;
     }
 
     if (inDetail && t) {
+      if (skipRelated) continue;
+
       const hasRelatedDate = /[［\[]\s*20\d{2}年\d{1,2}月\d{1,2}日/.test(t);
       const hasEllipsis = /(?:\.\.\.|…|・・・)$/.test(t);
       const headlineLike = looksLikeSponichiRelated(t);
 
       if (editorialLines >= 2 && (hasRelatedDate || hasEllipsis || headlineLike)) {
-        stoppedBeforeRelated = true;
-        inDetail = false;
+        skipRelated = true;
         continue;
       }
 
@@ -326,10 +329,6 @@ function cleanDraftBody(body, sourceUrl = "") {
     }
 
     out.push(line);
-  }
-
-  if (stoppedBeforeRelated && !out.some(line => cleanText(line) === "【出典】")) {
-    out.push("", "【出典】", "", sourceUrl);
   }
 
   return out.join("\n");
