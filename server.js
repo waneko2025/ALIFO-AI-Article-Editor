@@ -355,7 +355,7 @@ function makeBody(paragraphs, url) {
 
 function isSponichiUrl(sourceUrl = "") {
   try {
-    return /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname);
+    return /(?:^|\.)sponichi\.co\.jp$/i.test(new URL(sourceUrl).hostname);
   } catch {
     return false;
   }
@@ -363,10 +363,13 @@ function isSponichiUrl(sourceUrl = "") {
 
 function needsSponichiRepair(item) {
   if (!isSponichiUrl(item?.source?.url || "")) return false;
+
   const body = String(item?.body || "");
   const detail = body.split("【詳細】")[1]?.split("【出典】")[0] || "";
-  const lines = detail.split(/\\r?\\n/).map(cleanText).filter(Boolean);
+  const lines = detail.split(/\r?\n/).map(cleanText).filter(Boolean);
+
   if (lines.length < 2) return true;
+
   const relatedCount = lines.filter(looksLikeSponichiRelated).length;
   return relatedCount >= Math.max(2, Math.ceil(lines.length * 0.6));
 }
