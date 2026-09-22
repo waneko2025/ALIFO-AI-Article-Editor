@@ -278,24 +278,31 @@ function extractArticle($, sourceUrl) {
 function cleanDraftBody(body, sourceUrl = "") {
   const text = String(body || "").replace(/\r/g, "");
   const isSponichi = (() => {
-    try { return /(?:^|\\.)sponichi\\.co\\.jp$/i.test(new URL(sourceUrl).hostname); }
-    catch { return false; }
+    try {
+      return /(?:^|\.)sponichi\.co\.jp$/i.test(new URL(sourceUrl).hostname);
+    } catch {
+      return false;
+    }
   })();
 
   if (!isSponichi) return text;
 
-  const lines = text.split("\\n");
+  const lines = text.split("\n");
   const out = [];
   let inDetail = false;
+  let editorialLines = 0;
+  let stoppedBeforeRelated = false;
 
   for (const line of lines) {
     const t = cleanText(line);
 
     if (t === "【詳細】") {
       inDetail = true;
+      editorialLines = 0;
       out.push(line);
       continue;
     }
+
     if (t === "【出典】") {
       inDetail = false;
       out.push(line);
@@ -303,16 +310,29 @@ function cleanDraftBody(body, sourceUrl = "") {
     }
 
     if (inDetail && t) {
-      // Remove Sponichi related-story headlines from existing drafts too.
-      if (looksLikeSponichiRelated(t)) continue;
-      if (/[［\\[]\\s*20\\d{2}年\\d{1,2}月\\d{1,2}日/.test(t)) continue;
-      if (/(?:\\.\\.\\.|…|・・・)$/.test(t)) continue;
+      const hasRelatedDate = /[［\[]\s*20\d{2}年\d{1,2}月\d{1,2}日/.test(t);
+      const hasEllipsis = /(?:\.\.\.|…|・・・)$/.test(t);
+      const headlineLike = looksLikeSponichiRelated(t);
+
+      if (editorialLines >= 2 && (hasRelatedDate || hasEllipsis || headlineLike)) {
+        stoppedBeforeRelated = true;
+        inDetail = false;
+        continue;
+      }
+
+      out.push(line);
+      editorialLines++;
+      continue;
     }
 
     out.push(line);
   }
 
-  return out.join("\\n");
+  if (stoppedBeforeRelated && !out.some(line => cleanText(line) === "【出典】")) {
+    out.push("", "【出典】", "", sourceUrl);
+  }
+
+  return out.join("\n");
 }
 
 function makeSummary(paragraphs, max = 220) {
